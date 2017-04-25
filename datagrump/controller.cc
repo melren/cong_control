@@ -1,19 +1,24 @@
 #include <iostream>
 #include <math.h>
+#include <vector>
+#include <cmath>
 
 #include "controller.hh"
 #include "timestamp.hh"
 
 using namespace std;
 
-const unsigned int DEFAULT_WIN = 32;
+const unsigned int DEFAULT_WIN = 60;
 const uint64_t DELAY_THRESH = 80;
 unsigned int the_window_size = DEFAULT_WIN;
 uint64_t rtt_min = DELAY_THRESH;
 uint64_t last_seq_sent = 0;
-uint64_t counter = 0;
+uint64_t flight_counter = 0;
 float silly_win = DEFAULT_WIN;
-uint64_t last_window_change_time = 0;
+const int PREDICTION_SIZE = 2;
+uint64_t timestamp_prev_ack_received = 0;
+vector<vector<uint64_t>> recent_acks(PREDICTION_SIZE);
+int ack_counter = 0;
 
 /* Default constructor */
 Controller::Controller( const bool debug )
@@ -56,30 +61,55 @@ void Controller::ack_received( const uint64_t sequence_number_acked,
 			       const uint64_t timestamp_ack_received )
                                /* when the ack was received (by sender) */
 {
-  /* Keep track of time stamp and only decrease window size every period of time instead of every ack received */
-
-  uint64_t number_in_flight = last_seq_sent - sequence_number_acked;
-  
+   
   uint64_t rtt = timestamp_ack_received - send_timestamp_acked;
+
+  /* update rtt_min only for actual encountered rtt */
   if (rtt < rtt_min) {
     rtt_min = rtt;
   }
+
+  /* record most recent 2 x,y pair of time for ACK and its rtt */
+  vector<uint64_t> datagram_RTT = {timestamp_ack_received, rtt};
+
+  if (ack_counter < PREDICTION_SIZE) {
+    recent_acks[ack_counter] = datagram_RTT;
+  } else {
+    recent_acks[0] = recent_acks[1];    
+    recent_acks[1] = datagram_RTT;
+    /* ignore acks received at the same time */
+    if (float(recent_acks[1][0])-float(recent_acks[0][0]) > 0) {
+      float slope = (float(recent_acks[1][1])-float(recent_acks[0][1]))/(float(recent_acks[1][0])-float(recent_acks[0][0]));
+     
+      uint64_t predicted_time_to_next_ack = timestamp_ack_received - timestamp_prev_ack_received;
+      float intercept = float(recent_acks[1][1]) - slope*float(recent_acks[1][0]);
+      float new_rtt = ceil(slope*(float(timestamp_ack_received) + float(predicted_time_to_next_ack)) + intercept);
+      if(new_rtt > 0) {
+        rtt = new_rtt;
+      }
+    } 
+  }
+
+  timestamp_prev_ack_received = timestamp_ack_received;
+  ack_counter++;
+
+  /* Keep track of datagrams in flight and only decrease window size once every group of datagrams instead of every ack received */
+  uint64_t number_in_flight = last_seq_sent - sequence_number_acked; 
   
   if (rtt > timeout_ms()) {
-    if (counter == 0 ) {
-      float resize_factor = (rtt-rtt_min)/rtt_min;
+    if (flight_counter == 0 ) {
+      float resize_factor = (rtt-(timeout_ms()/2))/(timeout_ms()/2);
       the_window_size = ceil(the_window_size/(resize_factor));
       silly_win = the_window_size;
-      counter = floor(number_in_flight);
-    } else { counter--; }
+      flight_counter = floor(number_in_flight);
+    } else { flight_counter--; }
   } else {
     silly_win = silly_win + 1.0/the_window_size;
     the_window_size = floor(silly_win);
-    if (the_window_size > DEFAULT_WIN) {
+    /*if (the_window_size > DEFAULT_WIN) {
       the_window_size = DEFAULT_WIN; 
-    }
+    }*/
   }
-
 
   if ( debug_ ) {
     cerr << "At time " << timestamp_ack_received
@@ -95,5 +125,5 @@ void Controller::ack_received( const uint64_t sequence_number_acked,
    before sending one more datagram */
 unsigned int Controller::timeout_ms( void )
 {
-  return 2*rtt_min; 
+  return min(2*rtt_min, DELAY_THRESH);
 }
