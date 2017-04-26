@@ -11,7 +11,8 @@ const unsigned int DEFAULT_WIN = 50;
 
 /* Default constructor */
 Controller::Controller( const bool debug )
-  : debug_( debug ), window_size_( DEFAULT_WIN ), silly_window_ ( DEFAULT_WIN)
+  : debug_( debug ), window_size_( DEFAULT_WIN ), silly_window_ ( DEFAULT_WIN),
+    last_sent_seq_( 0 ), last_failed_seq_( 0 )
 {}
 
 /* Get current window size, in datagrams */
@@ -31,7 +32,7 @@ void Controller::datagram_was_sent( const uint64_t sequence_number,
 				    const uint64_t send_timestamp )
                                     /* in milliseconds */
 {
-  /* Default: take no action */
+  last_sent_seq_ = sequence_number;
 
   if ( debug_ ) {
     cerr << "At time " << send_timestamp
@@ -49,8 +50,9 @@ void Controller::ack_received( const uint64_t sequence_number_acked,
 			       const uint64_t timestamp_ack_received )
                                /* when the ack was received (by sender) */
 {
+
   uint64_t sample_RTT = timestamp_ack_received - send_timestamp_acked;
-  update_window(sample_RTT);
+  update_window(sample_RTT, sequence_number_acked);
 
   if ( debug_ ) {
     cerr << "At time " << timestamp_ack_received
@@ -69,10 +71,11 @@ unsigned int Controller::timeout_ms( void )
 }
 
 /* Update window size based on new RTT sample */
-void Controller::update_window( uint64_t sample_RTT ) {
-  if( sample_RTT > timeout_ms()) {
+void Controller::update_window( uint64_t sample_RTT, uint64_t sequence_number_acked ) {
+  if( sample_RTT > timeout_ms() && sequence_number_acked > last_failed_seq_) {
     window_size_ = floor(window_size_/2);
     silly_window_ = window_size_;
+    last_failed_seq_ = last_sent_seq_;
   }
   else {
     silly_window_ = silly_window_ + 1.0/window_size_;

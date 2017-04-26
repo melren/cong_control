@@ -13,6 +13,8 @@ private:
   /* Add member variables here */
   unsigned int window_size_;
   float silly_window_;
+  unsigned int last_sent_seq_;
+  unsigned int last_failed_seq_;
 
 public:
   /* Public interface for the congestion controller */
@@ -40,7 +42,7 @@ public:
   unsigned int timeout_ms( void );
 
   /* Update window size based on new RTT sample */
-  void update_window( uint64_t sample_RTT );
+  void update_window( uint64_t sample_RTT, uint64_t sequence_number_acked );
 };
 
 #endif
