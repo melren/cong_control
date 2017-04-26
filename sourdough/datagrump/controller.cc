@@ -1,27 +1,28 @@
 #include <iostream>
+#include <cmath>
 
 #include "controller.hh"
 #include "timestamp.hh"
 
 using namespace std;
 
+
+const unsigned int DEFAULT_WIN = 50;
+
 /* Default constructor */
 Controller::Controller( const bool debug )
-  : debug_( debug )
+  : debug_( debug ), window_size_( DEFAULT_WIN ), silly_window_ ( DEFAULT_WIN)
 {}
 
 /* Get current window size, in datagrams */
 unsigned int Controller::window_size( void )
 {
-  /* Default: fixed window size of 100 outstanding datagrams */
-  unsigned int the_window_size = 50;
-
   if ( debug_ ) {
     cerr << "At time " << timestamp_ms()
-	 << " window size is " << the_window_size << endl;
+	 << " window size is " << window_size_ << endl;
   }
 
-  return the_window_size;
+  return window_size_;
 }
 
 /* A datagram was sent */
@@ -48,7 +49,8 @@ void Controller::ack_received( const uint64_t sequence_number_acked,
 			       const uint64_t timestamp_ack_received )
                                /* when the ack was received (by sender) */
 {
-  /* Default: take no action */
+  uint64_t sample_RTT = timestamp_ack_received - send_timestamp_acked;
+  update_window(sample_RTT);
 
   if ( debug_ ) {
     cerr << "At time " << timestamp_ack_received
@@ -64,4 +66,16 @@ void Controller::ack_received( const uint64_t sequence_number_acked,
 unsigned int Controller::timeout_ms( void )
 {
   return 1000; /* timeout of one second */
+}
+
+/* Update window size based on new RTT sample */
+void Controller::update_window( uint64_t sample_RTT ) {
+  if( sample_RTT > timeout_ms()) {
+    window_size_ = floor(window_size_/2);
+    silly_window_ = window_size_;
+  }
+  else {
+    silly_window_ = silly_window_ + 1.0/window_size_;
+    window_size_ = floor(silly_window_);
+  }
 }

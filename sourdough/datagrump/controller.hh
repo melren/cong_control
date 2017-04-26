@@ -11,6 +11,8 @@ private:
   bool debug_; /* Enables debugging output */
 
   /* Add member variables here */
+  unsigned int window_size_;
+  float silly_window_;
 
 public:
   /* Public interface for the congestion controller */
@@ -36,6 +38,9 @@ public:
   /* How long to wait (in milliseconds) if there are no acks
      before sending one more datagram */
   unsigned int timeout_ms( void );
+
+  /* Update window size based on new RTT sample */
+  void update_window( uint64_t sample_RTT );
 };
 
 #endif
