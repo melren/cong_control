@@ -2,22 +2,26 @@
 #include <math.h>
 #include <vector>
 #include <cmath>
+#include <algorithm>
+#include <iostream>
+#include <numeric>
 
 #include "controller.hh"
 #include "timestamp.hh"
 
 using namespace std;
 
-const unsigned int DEFAULT_WIN = 60;
+const unsigned int DEFAULT_WIN = 32;
 const uint64_t DELAY_THRESH = 80;
 unsigned int the_window_size = DEFAULT_WIN;
 uint64_t rtt_min = DELAY_THRESH;
 uint64_t last_seq_sent = 0;
 uint64_t flight_counter = 0;
 float silly_win = DEFAULT_WIN;
-const int PREDICTION_SIZE = 2;
+const int PREDICTION_SIZE = 4;
 uint64_t timestamp_prev_ack_received = 0;
-vector<vector<uint64_t>> recent_acks(PREDICTION_SIZE);
+vector<double>ACK_times(PREDICTION_SIZE);
+vector<double>ACK_RTTs(PREDICTION_SIZE);
 int ack_counter = 0;
 
 /* Default constructor */
@@ -69,25 +73,16 @@ void Controller::ack_received( const uint64_t sequence_number_acked,
     rtt_min = rtt;
   }
 
-  /* record most recent 2 x,y pair of time for ACK and its rtt */
-  vector<uint64_t> datagram_RTT = {timestamp_ack_received, rtt};
-
-  if (ack_counter < PREDICTION_SIZE) {
-    recent_acks[ack_counter] = datagram_RTT;
-  } else {
-    recent_acks[0] = recent_acks[1];    
-    recent_acks[1] = datagram_RTT;
-    /* ignore acks received at the same time */
-    if (float(recent_acks[1][0])-float(recent_acks[0][0]) > 0) {
-      float slope = (float(recent_acks[1][1])-float(recent_acks[0][1]))/(float(recent_acks[1][0])-float(recent_acks[0][0]));
-     
-      uint64_t predicted_time_to_next_ack = timestamp_ack_received - timestamp_prev_ack_received;
-      float intercept = float(recent_acks[1][1]) - slope*float(recent_acks[1][0]);
-      float new_rtt = ceil(slope*(float(timestamp_ack_received) + float(predicted_time_to_next_ack)) + intercept);
-      if(new_rtt > 0) {
-        rtt = new_rtt;
-      }
-    } 
+  ACK_times[ack_counter % PREDICTION_SIZE] = timestamp_ack_received;
+  ACK_RTTs[ack_counter % PREDICTION_SIZE] = rtt;
+  
+  if(ack_counter >= PREDICTION_SIZE - 1){
+    /* do not double count acks received at the same time */
+    if(timestamp_ack_received == timestamp_prev_ack_received){
+      ack_counter--;
+    } else {
+      rtt = predicted_RTT(timestamp_ack_received);
+    }
   }
 
   timestamp_prev_ack_received = timestamp_ack_received;
@@ -104,7 +99,7 @@ void Controller::ack_received( const uint64_t sequence_number_acked,
       flight_counter = floor(number_in_flight);
     } else { flight_counter--; }
   } else {
-    silly_win = silly_win + 1.0/the_window_size;
+    silly_win = silly_win + 1.5/(the_window_size);
     the_window_size = floor(silly_win);
     /*if (the_window_size > DEFAULT_WIN) {
       the_window_size = DEFAULT_WIN; 
@@ -118,6 +113,29 @@ void Controller::ack_received( const uint64_t sequence_number_acked,
 	 << ", received @ time " << recv_timestamp_acked << " by receiver's clock)"
 	 << "RTT is " << rtt << " RTTmin is " << rtt_min
 	 << endl;
+  }
+}
+
+/* fits regression line of most recent ACK time+rtt pairs to predict next RTT */
+uint64_t Controller::predicted_RTT(uint64_t time)
+{
+  int n = ACK_times.size();
+  double s_x = std::accumulate(ACK_times.begin(), ACK_times.end(), 0.0);
+  double s_y = std::accumulate(ACK_RTTs.begin(), ACK_RTTs.end(), 0.0);
+  double s_xx = std::inner_product(ACK_times.begin(), ACK_times.end(), ACK_times.begin(), 0.0);
+  double s_xy = std::inner_product(ACK_times.begin(), ACK_times.end(), ACK_RTTs.begin(), 0.0);
+  double slope = (n*s_xy - s_x*s_y)/(n*s_xx - s_x*s_x);
+
+  double intercept = double(s_y/n) - slope*double(s_x/n);
+  uint64_t predicted_time_to_next_ack = time - timestamp_prev_ack_received;
+  
+  double pred_rtt = ceil(slope*(double(time) + double(predicted_time_to_next_ack)) + intercept);
+  
+  /* we don't want to predict more optimistic than what's possible */
+  if(pred_rtt >= rtt_min) {
+    return uint64_t(pred_rtt);
+  } else {
+    return rtt_min;
   }
 }
 

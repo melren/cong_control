@@ -33,6 +33,8 @@ public:
 		     const uint64_t recv_timestamp_acked,
 		     const uint64_t timestamp_ack_received );
 
+  uint64_t predicted_RTT(uint64_t time);
+
   /* How long to wait (in milliseconds) if there are no acks
      before sending one more datagram */
   unsigned int timeout_ms( void );
