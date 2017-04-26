@@ -11,18 +11,27 @@
 
 using namespace std;
 
-const unsigned int DEFAULT_WIN = 32;
-const uint64_t DELAY_THRESH = 80;
+const unsigned int DEFAULT_WIN = 32;		// default cwnd size
+const uint64_t DELAY_THRESH = 80;		// default timeout in ms
+const int PREDICTION_SIZE = 4;			// number of recent ACKs to track for prediction of next RTT
+
+/* Involved in window adjustment */
 unsigned int the_window_size = DEFAULT_WIN;
 uint64_t rtt_min = DELAY_THRESH;
+float silly_win = DEFAULT_WIN;
+uint64_t prev_rtt = 0;
+
+/* Involved in tracking data in flight */
 uint64_t last_seq_sent = 0;
 uint64_t flight_counter = 0;
-float silly_win = DEFAULT_WIN;
-const int PREDICTION_SIZE = 4;
+
+/* Involved in predicting next RTT */
+bool predicted = false;
+int ack_counter = 0;
 uint64_t timestamp_prev_ack_received = 0;
 vector<double>ACK_times(PREDICTION_SIZE);
 vector<double>ACK_RTTs(PREDICTION_SIZE);
-int ack_counter = 0;
+
 
 /* Default constructor */
 Controller::Controller( const bool debug )
@@ -67,12 +76,13 @@ void Controller::ack_received( const uint64_t sequence_number_acked,
 {
    
   uint64_t rtt = timestamp_ack_received - send_timestamp_acked;
-
+  
+  predicted = false;
   /* update rtt_min only for actual encountered rtt */
   if (rtt < rtt_min) {
     rtt_min = rtt;
   }
-
+  
   ACK_times[ack_counter % PREDICTION_SIZE] = timestamp_ack_received;
   ACK_RTTs[ack_counter % PREDICTION_SIZE] = rtt;
   
@@ -82,6 +92,7 @@ void Controller::ack_received( const uint64_t sequence_number_acked,
       ack_counter--;
     } else {
       rtt = predicted_RTT(timestamp_ack_received);
+      predicted = true;
     }
   }
 
@@ -94,14 +105,26 @@ void Controller::ack_received( const uint64_t sequence_number_acked,
   if (rtt > timeout_ms()) {
     if (flight_counter == 0 ) {
       float resize_factor = (rtt-(timeout_ms()/2.0))/(timeout_ms()/2.0);
-      the_window_size = ceil(the_window_size/(resize_factor));
+      if (predicted) {
+        /* give less weight to a predicted RTT-influenced window drop */
+        the_window_size = ceil(the_window_size/2.0);
+      } else {
+        the_window_size = ceil(the_window_size/(resize_factor));
+      }
       silly_win = the_window_size;
       flight_counter = floor(number_in_flight);
     } else { flight_counter--; }
   } else {
-    silly_win = silly_win + 1.5/(float(the_window_size));
+    float scale_factor = 1.0;
+    if (rtt < prev_rtt) {
+      /* increase window more aggressively for RTT that shows improvement */
+      scale_factor = 2*((prev_rtt - rtt)/float(prev_rtt) + 1);
+    } 
+    silly_win = silly_win + (scale_factor*1.5)/(float(the_window_size));
     the_window_size = floor(silly_win);
   }
+
+  prev_rtt = rtt;
 
   if ( debug_ ) {
     cerr << "At time " << timestamp_ack_received
@@ -113,7 +136,9 @@ void Controller::ack_received( const uint64_t sequence_number_acked,
   }
 }
 
-/* fits regression line of most recent ACK time+rtt pairs to predict next RTT */
+/* fits regression line of most recent ACK time+rtt pairs to predict next RTT 
+   credit for the finding the slope of the regression goes to the following post: 
+   http://stackoverflow.com/a/19039500 */
 uint64_t Controller::predicted_RTT(uint64_t time)
 {
   int n = ACK_times.size();

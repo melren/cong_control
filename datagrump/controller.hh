@@ -33,6 +33,7 @@ public:
 		     const uint64_t recv_timestamp_acked,
 		     const uint64_t timestamp_ack_received );
 
+  /* Predict the upcoming RTT based on recent ACKs */
   uint64_t predicted_RTT(uint64_t time);
 
   /* How long to wait (in milliseconds) if there are no acks
