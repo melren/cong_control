@@ -93,17 +93,14 @@ void Controller::ack_received( const uint64_t sequence_number_acked,
   
   if (rtt > timeout_ms()) {
     if (flight_counter == 0 ) {
-      float resize_factor = (rtt-(timeout_ms()/2))/(timeout_ms()/2);
+      float resize_factor = (rtt-(timeout_ms()/2.0))/(timeout_ms()/2.0);
       the_window_size = ceil(the_window_size/(resize_factor));
       silly_win = the_window_size;
       flight_counter = floor(number_in_flight);
     } else { flight_counter--; }
   } else {
-    silly_win = silly_win + 1.5/(the_window_size);
+    silly_win = silly_win + 1.5/(float(the_window_size));
     the_window_size = floor(silly_win);
-    /*if (the_window_size > DEFAULT_WIN) {
-      the_window_size = DEFAULT_WIN; 
-    }*/
   }
 
   if ( debug_ ) {
