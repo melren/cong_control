@@ -14,7 +14,7 @@ private:
   unsigned int window_size_;
   float silly_window_;
   unsigned int last_sent_seq_;
-  unsigned int last_failed_seq_;
+  unsigned int flight_counter_;
   unsigned int timeout_ms_;
   float estimated_RTT_;
   float variance_RTT_;

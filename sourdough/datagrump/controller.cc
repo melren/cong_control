@@ -16,7 +16,7 @@ const float BETA = 0.25;
 /* Default constructor */
 Controller::Controller( const bool debug )
   : debug_( debug ), window_size_( DEFAULT_WIN ), silly_window_ ( DEFAULT_WIN ),
-    last_sent_seq_( 0 ), last_failed_seq_( 0 ), timeout_ms_( DEFAULT_TO ),
+    last_sent_seq_( 0 ), flight_counter_( 0 ), timeout_ms_( DEFAULT_TO ),
     estimated_RTT_( DEFAULT_RTT ), variance_RTT_( 0 )
 {}
 
@@ -79,10 +79,12 @@ unsigned int Controller::timeout_ms( void )
 
 /* Update window size based on new RTT sample */
 void Controller::update_window( uint64_t sample_RTT, uint64_t sequence_number_acked ) {
-  if( sample_RTT > timeout_ms() && sequence_number_acked > last_failed_seq_) {
-    window_size_ = floor(window_size_/2);
-    silly_window_ = window_size_;
-    last_failed_seq_ = last_sent_seq_;
+  if( sample_RTT > timeout_ms() ) {
+    if (flight_counter_ == 0) {
+      window_size_ = floor(window_size_/2);
+      silly_window_ = window_size_;
+      flight_counter_ = last_sent_seq_ - sequence_number_acked; 
+    } else { flight_counter_--; }    
   }
   else {
     silly_window_ = silly_window_ + 1.0/window_size_;
