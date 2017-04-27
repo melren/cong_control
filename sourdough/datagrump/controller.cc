@@ -12,7 +12,7 @@
 using namespace std;
 
 const unsigned int DEFAULT_WIN = 32;		// default cwnd size
-const uint64_t MAX_DELAY = 80;		// maximum desired latency
+const uint64_t MAX_DELAY = 100;		// maximum desired latency
 const int PREDICTION_SIZE = 4;			// number of recent ACKs to track for prediction of next RTT
 
 /* Default constructor */
