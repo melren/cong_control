@@ -1,4 +1,4 @@
-#include <iostream> 
+#include <iostream>
 #include <math.h>
 #include <vector>
 #include <cmath>
@@ -12,15 +12,30 @@
 using namespace std;
 
 const unsigned int DEFAULT_WIN = 32;		// default cwnd size
-const uint64_t MAX_DELAY = 80;		// maximum desired latency
+const uint64_t DELAY_THRESH = 80;		// default timeout in ms
 const int PREDICTION_SIZE = 4;			// number of recent ACKs to track for prediction of next RTT
+
+/* Involved in window adjustment */
+unsigned int the_window_size = DEFAULT_WIN;
+uint64_t rtt_min = DELAY_THRESH;
+float silly_win = DEFAULT_WIN;
+uint64_t prev_rtt = 0;
+
+/* Involved in tracking data in flight */
+uint64_t last_seq_sent = 0;
+uint64_t flight_counter = 0;
+
+/* Involved in predicting next RTT */
+bool predicted = false;
+int ack_counter = 0;
+uint64_t timestamp_prev_ack_received = 0;
+vector<double>ACK_times(PREDICTION_SIZE);
+vector<double>ACK_RTTs(PREDICTION_SIZE);
+
 
 /* Default constructor */
 Controller::Controller( const bool debug )
-  : debug_( debug ), window_size_( DEFAULT_WIN ), silly_window_( DEFAULT_WIN ),
-    rtt_min_( MAX_DELAY ), prev_rtt_( 0 ), last_seq_sent_( 0 ), flight_counter_( 0 ),
-    timestamp_prev_ack_received_( 0 ), ack_counter_( 0 ), ACK_times_(PREDICTION_SIZE), 
-    ACK_RTTs_(PREDICTION_SIZE)
+  : debug_( debug )
 {}
 
 /* Get current window size, in datagrams */
@@ -28,10 +43,10 @@ unsigned int Controller::window_size( void )
 {
   if ( debug_ ) {
     cerr << "At time " << timestamp_ms()
-	 << " window size is " << window_size_ << endl;
+	 << " window size is " << the_window_size << endl;
   }
 
-  return window_size_;
+  return the_window_size;
 }
 
 /* A datagram was sent */
@@ -41,7 +56,7 @@ void Controller::datagram_was_sent( const uint64_t sequence_number,
                                     /* in milliseconds */
 {
   /* Default: take no action */
-  last_seq_sent_ = sequence_number;
+  last_seq_sent = sequence_number;
 
   if ( debug_ ) {
     cerr << "At time " << send_timestamp
@@ -58,89 +73,91 @@ void Controller::ack_received( const uint64_t sequence_number_acked,
 			       /* when the acknowledged datagram was received (receiver's clock)*/
 			       const uint64_t timestamp_ack_received )
                                /* when the ack was received (by sender) */
-{ 
+{
+   
   uint64_t rtt = timestamp_ack_received - send_timestamp_acked;
-  timestamp_prev_ack_received_ = timestamp_ack_received; 
-  ack_counter_++;
   
-  // update rtt_min_ 
-  if (rtt < rtt_min_) {
-    rtt_min_ = rtt;
-  }
-  if ( debug_ ) {
-    cerr << "At time " << timestamp_ack_received
-   << " received ack for datagram " << sequence_number_acked
-   << " (send @ time " << send_timestamp_acked
-   << ", received @ time " << recv_timestamp_acked << " by receiver's clock)"
-   << "RTT is " << rtt << " RTTmin is " << rtt_min_
-   << endl;
+  predicted = false;
+  /* update rtt_min only for actual encountered rtt */
+  if (rtt < rtt_min) {
+    rtt_min = rtt;
   }
   
-  ACK_times_[ack_counter_ % PREDICTION_SIZE] = timestamp_ack_received;
-  ACK_RTTs_[ack_counter_ % PREDICTION_SIZE] = rtt;
+  ACK_times[ack_counter % PREDICTION_SIZE] = timestamp_ack_received;
+  ACK_RTTs[ack_counter % PREDICTION_SIZE] = rtt;
   
-  bool predicted = false;
-  if(ack_counter_ > PREDICTION_SIZE){ 
+  if(ack_counter >= PREDICTION_SIZE - 1){
     /* do not double count acks received at the same time */
-    if(timestamp_ack_received == timestamp_prev_ack_received_){
-      ack_counter_--;
+    if(timestamp_ack_received == timestamp_prev_ack_received){
+      ack_counter--;
     } else {
       rtt = predicted_RTT(timestamp_ack_received);
       predicted = true;
     }
   }
-  update_window (rtt, sequence_number_acked, predicted);
-  prev_rtt_ = rtt;
-}
 
-/* Update window size based on new RTT sample */
-void Controller::update_window( uint64_t rtt, uint64_t sequence_number_acked, bool predicted) 
-{
+  timestamp_prev_ack_received = timestamp_ack_received;
+  ack_counter++;
+
+  /* Keep track of datagrams in flight and only decrease window size once every group of datagrams instead of every ack received */
+  uint64_t number_in_flight = last_seq_sent - sequence_number_acked; 
+  
   if (rtt > timeout_ms()) {
-    if ( flight_counter_ == 0 ) { /*  only decrease window size once per group of datagrams */
+    if (flight_counter == 0 ) {
       float resize_factor = (rtt-(timeout_ms()/2.0))/(timeout_ms()/2.0);
       if (predicted) {
-        /* decrease window less aggressively if using a prediction */
-        window_size_ = ceil(window_size_/2.0);
+        /* give less weight to a predicted RTT-influenced window drop */
+        the_window_size = ceil(the_window_size/2.0);
       } else {
-        window_size_ = ceil(window_size_/(resize_factor));
+        the_window_size = ceil(the_window_size/(resize_factor));
       }
-      silly_window_ = window_size_;
-      flight_counter_ = last_seq_sent_ - sequence_number_acked; 
-    } else { flight_counter_--; }
+      silly_win = the_window_size;
+      flight_counter = floor(number_in_flight);
+    } else { flight_counter--; }
   } else {
     float scale_factor = 1.0;
-    if (rtt < prev_rtt_) {
-      /* increase window more aggressively if RTT is trending downwards */
-      scale_factor = 2*((prev_rtt_ - rtt)/float(prev_rtt_) + 1);
+    if (rtt < prev_rtt) {
+      /* increase window more aggressively for RTT that shows improvement */
+      scale_factor = 2*((prev_rtt - rtt)/float(prev_rtt) + 1);
     } 
-    silly_window_ = silly_window_ + (scale_factor*1.5)/(float(window_size_));
-    window_size_ = floor(silly_window_);
+    silly_win = silly_win + (scale_factor*1.5)/(float(the_window_size));
+    the_window_size = floor(silly_win);
+  }
+
+  prev_rtt = rtt;
+
+  if ( debug_ ) {
+    cerr << "At time " << timestamp_ack_received
+	 << " received ack for datagram " << sequence_number_acked
+	 << " (send @ time " << send_timestamp_acked
+	 << ", received @ time " << recv_timestamp_acked << " by receiver's clock)"
+	 << "RTT is " << rtt << " RTTmin is " << rtt_min
+	 << endl;
   }
 }
 
-/* Fit regression line of most recent ACK time+rtt pairs to predict next RTT 
+/* fits regression line of most recent ACK time+rtt pairs to predict next RTT 
    credit for the finding the slope of the regression goes to the following post: 
    http://stackoverflow.com/a/19039500 */
 uint64_t Controller::predicted_RTT(uint64_t time)
 {
-  int n = ACK_times_.size();
-  double s_x = accumulate(ACK_times_.begin(), ACK_times_.end(), 0.0);
-  double s_y = accumulate(ACK_RTTs_.begin(), ACK_RTTs_.end(), 0.0);
-  double s_xx = inner_product(ACK_times_.begin(), ACK_times_.end(), ACK_times_.begin(), 0.0);
-  double s_xy =  inner_product(ACK_times_.begin(), ACK_times_.end(), ACK_RTTs_.begin(), 0.0);
+  int n = ACK_times.size();
+  double s_x = std::accumulate(ACK_times.begin(), ACK_times.end(), 0.0);
+  double s_y = std::accumulate(ACK_RTTs.begin(), ACK_RTTs.end(), 0.0);
+  double s_xx = std::inner_product(ACK_times.begin(), ACK_times.end(), ACK_times.begin(), 0.0);
+  double s_xy = std::inner_product(ACK_times.begin(), ACK_times.end(), ACK_RTTs.begin(), 0.0);
   double slope = (n*s_xy - s_x*s_y)/(n*s_xx - s_x*s_x);
 
   double intercept = double(s_y/n) - slope*double(s_x/n);
-  uint64_t predicted_time_to_next_ack = time - timestamp_prev_ack_received_;
+  uint64_t predicted_time_to_next_ack = time - timestamp_prev_ack_received;
   
   double pred_rtt = ceil(slope*(double(time) + double(predicted_time_to_next_ack)) + intercept);
   
-  /* we don't want to predict something more optimistic than what's possible */
-  if(pred_rtt >= rtt_min_) {
+  /* we don't want to predict more optimistic than what's possible */
+  if(pred_rtt >= rtt_min) {
     return uint64_t(pred_rtt);
   } else {
-    return rtt_min_;
+    return rtt_min;
   }
 }
 
@@ -148,5 +165,5 @@ uint64_t Controller::predicted_RTT(uint64_t time)
    before sending one more datagram */
 unsigned int Controller::timeout_ms( void )
 {
-  return min(2*rtt_min_, MAX_DELAY);
+  return min(2*rtt_min, DELAY_THRESH);
 }
