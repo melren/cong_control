@@ -15,6 +15,9 @@ private:
   float silly_window_;
   unsigned int last_sent_seq_;
   unsigned int last_failed_seq_;
+  unsigned int timeout_ms_;
+  float estimated_RTT_;
+  float variance_RTT_;
 
 public:
   /* Public interface for the congestion controller */
@@ -43,6 +46,11 @@ public:
 
   /* Update window size based on new RTT sample */
   void update_window( uint64_t sample_RTT, uint64_t sequence_number_acked );
-};
 
+  /* Update RTT estimate based on latest sample */
+  void update_RTT ( uint64_t sample_RTT, bool first );
+
+  /* Update retransmission timeout value*/  
+  void update_timeout( void );
+};
 #endif

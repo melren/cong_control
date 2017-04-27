@@ -8,11 +8,16 @@ using namespace std;
 
 
 const unsigned int DEFAULT_WIN = 50;
+const unsigned int DEFAULT_TO = 1000;
+const float DEFAULT_RTT = 100;
+const float ALPHA = 0.125;
+const float BETA = 0.25;
 
 /* Default constructor */
 Controller::Controller( const bool debug )
-  : debug_( debug ), window_size_( DEFAULT_WIN ), silly_window_ ( DEFAULT_WIN),
-    last_sent_seq_( 0 ), last_failed_seq_( 0 )
+  : debug_( debug ), window_size_( DEFAULT_WIN ), silly_window_ ( DEFAULT_WIN ),
+    last_sent_seq_( 0 ), last_failed_seq_( 0 ), timeout_ms_( DEFAULT_TO ),
+    estimated_RTT_( DEFAULT_RTT ), variance_RTT_( 0 )
 {}
 
 /* Get current window size, in datagrams */
@@ -53,6 +58,8 @@ void Controller::ack_received( const uint64_t sequence_number_acked,
 
   uint64_t sample_RTT = timestamp_ack_received - send_timestamp_acked;
   update_window(sample_RTT, sequence_number_acked);
+  update_RTT(sample_RTT, sequence_number_acked == 0);
+  update_timeout();
 
   if ( debug_ ) {
     cerr << "At time " << timestamp_ack_received
@@ -67,7 +74,7 @@ void Controller::ack_received( const uint64_t sequence_number_acked,
    before sending one more datagram */
 unsigned int Controller::timeout_ms( void )
 {
-  return 1000; /* timeout of one second */
+  return timeout_ms_;
 }
 
 /* Update window size based on new RTT sample */
@@ -81,4 +88,24 @@ void Controller::update_window( uint64_t sample_RTT, uint64_t sequence_number_ac
     silly_window_ = silly_window_ + 1.0/window_size_;
     window_size_ = floor(silly_window_);
   }
+}
+
+/* Update RTT estimate based on latest sample */
+void Controller::update_RTT ( uint64_t sample_RTT, bool first ) 
+{
+  if ( first ) {
+    estimated_RTT_ = sample_RTT;
+    variance_RTT_ = estimated_RTT_/2;
+  }
+  else {
+    /* update RTT according to RFC 2988 */
+    variance_RTT_ = (1 - BETA) * variance_RTT_ + BETA * abs(sample_RTT - estimated_RTT_);
+    estimated_RTT_ =  (1 - ALPHA) * estimated_RTT_ + ALPHA * sample_RTT;
+  }
+}
+
+/* Update retransmission timeout value*/
+void Controller::update_timeout( void ) 
+{
+  timeout_ms_ = ceil(estimated_RTT_ + 4 * variance_RTT_);
 }
